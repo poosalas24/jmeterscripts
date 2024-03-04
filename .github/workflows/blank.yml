@@ -6,8 +6,6 @@ name: CI
   pull_request:
     branches:
       - main
-  workflow_dispatch: null
-jobs: Check failure on line 18 in .github/workflows/blank.yml
 build:
   runs-on: ubuntu-latest
   steps:
