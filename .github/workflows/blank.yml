@@ -13,7 +13,7 @@ build:
     - name: PerfAction for JMeter
       uses: QAInsights/PerfAction@v5.6.2
       with:
-        test-plan-path: ./sampleJmetersc.jmx
+        test-plan-path: './sampleJmetersc.jmx'
     - name: Upload Results
       uses: actions/upload-artifact@v2
       with:
