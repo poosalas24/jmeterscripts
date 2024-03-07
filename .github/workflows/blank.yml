@@ -1,21 +1,117 @@
-name: CI
-'on':
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-build:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v3
-    - name: PerfAction for JMeter
-      uses: QAInsights/PerfAction@v5.6.2
-      with:
-        test-plan-path: './sampleJmetersc.jmx'
-    - name: Upload Results
-      uses: actions/upload-artifact@v2
-      with:
-        name: Jmeter-results
-        path: Results.jtl
+name: JMeter Execution
+# https://github.com/rbhadti94/apache-jmeter-action
+
+on:
+  schedule:
+    - cron: '0 3 * * 6'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'environment'
+        default: 'perf'
+        required: true
+        type: choice
+        options: ['auto', 'docker', 'jmeter', 'rcaut', 'perf']
+      tests:
+        description: 'Tests'
+        default: 'pocTest'
+        required: true
+        type: choice
+        options: ['pocTest']
+      core-api-tag:
+          description: 'The core-api tag, only for docker environments'
+          default: 'master'
+          required: false
+          type: string
+      core-ui-tag:
+          description: 'The core-ui tag, only for docker environments'
+          default: 'master'
+          required: false
+          type: string
+
+# if enrivonment or tests inputs are updated, must also update the dicctionaries on 'environmentSelection' and 'pathGroupTests'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest-4core-static-ip
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      JMETER_PATH: ${{ inputs.tests }}
+      PROJECT_PATH: '/home/runner/work/automation-performance-test/automation-performance-test'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.x
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg2
+          pip install python-dotenv
+
+      - name: Install Jmeter and other tools
+        run: |
+          npm install
+          cd ${{ env.PROJECT_PATH }}/installFiles
+          cat apache-jmeter.tar.* > combined-apache-jmeter.tar
+          tar xf combined-apache-jmeter.tar
+          cd ..
+          cd scripts
+          mkdir -p tests
+          cp -r ${{ env.PROJECT_PATH }}/tests/* ${{ env.PROJECT_PATH }}/scripts/tests
+
+      - name: Login to sageActive
+        if: ${{ env.ENVIRONMENT  == 'docker' }}
+        uses: docker/login-action@v2.1.0
+        with:
+          registry: ghcr.io/sage-active
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy docker environment
+        if: ${{ env.ENVIRONMENT  == 'docker' }}
+        uses: isbang/compose-action@v1.4.1
+        with:
+          compose-file: ci/docker-compose.yml
+        env:
+          COREAPITAG: ${{ inputs.core-api-tag }}
+          COREUITAG: ${{ inputs.core-ui-tag }}
+      
+      - name: Wait for 1 minute
+        if: ${{ env.ENVIRONMENT  == 'docker' }}
+        run: sleep 60s
+        shell: bash
+
+      - name: Set Starting Epoch Time as Environment Variable
+        run: echo "START_EPOCH_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run Jmeter
+        run: python -u ${{ env.PROJECT_PATH }}/scripts/runMultipleTestsPipeline.py '${{ env.ENVIRONMENT }}' '${{ env.JMETER_PATH }}'
+
+      - name: Set Starting Epoch Time as Environment Variable
+        run: echo "FINISH_EPOCH_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Generate summary
+        id: summary
+        env:
+          SUMMARY: ${{ env.SUMMARY }}
+        run: |
+          python ${{ env.PROJECT_PATH }}/.github/workflows/scripts/generateSummary.py '${{ env.START_EPOCH_TIME }}' '${{ env.FINISH_EPOCH_TIME }}'
+          SUMMARY=$(cat ./summary/report.html)
+          echo "SUMMARY=$SUMMARY" >> $GITHUB_ENV
+
+      - name: Microsoft Teams Notify Channel
+        uses: chrisdleech-pol/github-action-notify-teams@v1.0.0
+        with:
+          TEAMS_URI: 'https://sage365.webhook.office.com/webhookb2/08050a9b-9e4a-4369-ac5f-bcc2f2dd9891@3e32dd7c-41f6-492d-a1a3-c58eb02cf4f8/IncomingWebhook/2a8aea72f51f472f986931d60ceb7326/fe392952-626b-42a4-b7c6-d0446646bd23'
+          TEAMS_MSG_TITLE: 'Jmeter - ${{ env.JMETER_PATH }} tests - ${{ env.ENVIRONMENT }} env'
+          TEAMS_MSG_SUMMARY: '${{ env.SUMMARY }}'
+          TEAMS_MSG_TYPE: 'info'
+        continue-on-error: true 
+        
